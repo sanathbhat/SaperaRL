@@ -1,7 +1,7 @@
 import pygame
 import pygame.freetype
 
-from config.params import BLACK, RED, GREEN, YELLOW
+from config import BLACK, RED, GREEN, YELLOW
 
 SCORE_AREA_HEIGHT = 50
 
@@ -15,7 +15,7 @@ class SnakeRenderer:
         self.display_width, self.display_height = grid_size * cell_size, grid_size * cell_size + SCORE_AREA_HEIGHT
         self.display = pygame.display.set_mode((self.display_width, self.display_height))
         self.clock = pygame.time.Clock()
-        self.font = pygame.freetype.SysFont("serif", 25)
+        self.font = pygame.freetype.SysFont("serif", 20)
 
     def render(self, state, score):
         self.display.fill(BLACK)

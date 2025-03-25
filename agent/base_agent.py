@@ -2,7 +2,7 @@ from abc import abstractmethod
 
 import numpy as np
 
-from utils.structs import Direction
+from utils import Direction
 
 
 class SnakeBaseAgent:
