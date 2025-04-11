@@ -8,7 +8,8 @@ import numpy as np
 import pygame
 
 from config import FOOD_PICKUP_REWARD, STEP_COST, CRASH_COST, TRUNCATION_COST, PROGRESS_REWARD, DIGRESS_COST, \
-    IN_PLACE_CIRCLING_COST, MAX_WANDERING_STEPS_MULTIPLIER, SELF_LOOP_CRASH_PREVENTION_MULTIPLER, TURN_COST
+    IN_PLACE_CIRCLING_COST, MAX_WANDERING_STEPS_MULTIPLIER, SELF_LOOP_CRASH_PREVENTION_MULTIPLER, TURN_COST, \
+    COVERAGE_REWARD
 from utils import manhattan_distance
 from utils.structs import Direction
 
@@ -21,15 +22,16 @@ class SnakeEnv(gym.Env):
     def __init__(self, grid_size, renderer=None, agent=None):
         self.grid_size = grid_size
         self.action_space = spaces.Discrete(3)  # 0=No-op, 1=Left, 2=Right
-        # self.observation_space = spaces.Box(low=0, high=3, shape=(self.grid_size, self.grid_size), dtype=np.uint8)  # 0=space, 1=snake head, 2=snake body, 3=food
-        self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(13,), dtype=np.float16)
+        self.observation_space = spaces.Box(low=0, high=3, shape=(self.grid_size, self.grid_size), dtype=np.uint8)  # 0=space, 1=snake head, 2=snake body, 3=food
+        # self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(13,), dtype=np.float16)
         self.snake = deque()            # list of body segments to update position incrementally
         self.snake_segments = set()     # set of body segments for fast lookups during collision checks
         self.direction = None
         self.food = None
         self.done = False
         self.steps = 0
-        self.max_steps = MAX_WANDERING_STEPS_MULTIPLIER * self.grid_size * self.grid_size    # max steps without picking up food
+        self.max_steps_base = MAX_WANDERING_STEPS_MULTIPLIER * self.grid_size * self.grid_size  # amount to increase max steps ceiling based on snake len
+        self.max_steps = self.max_steps_base    # max steps without picking up food
 
         self.renderer = renderer
         self.render_mode = "human"
@@ -37,6 +39,9 @@ class SnakeEnv(gym.Env):
 
         # experimental: to boost initial exploration instead of spot circling
         self.recently_visited = deque(maxlen=6)
+
+        # experimental: coverage bonus to boost initial exploration
+        self.visited = set()
 
     def reset(self, *, seed=None, options=None):
         start_x, start_y = self.grid_size // 2, self.grid_size // 2
@@ -48,11 +53,13 @@ class SnakeEnv(gym.Env):
         self.food = self.spawn_food(reset=True)
         self.done = False
         self.steps = 0      # keeps track of how much the snake has traveled after the last food gobble
+        self.max_steps = self.max_steps_base
 
-        # self.recently_visited = deque(reversed(self.snake), maxlen=6)
+        self.recently_visited = deque(reversed(self.snake), maxlen=6)
+        self.visited = set()
 
-        # return self.get_state(), {}
-        return self.get_state_experimental(), {}
+        return self.get_state(), {}
+        # return self.get_state_experimental(), {}
 
     def step(self, action):     # return new_state, reward, terminated, truncated, info
         self.steps += 1
@@ -81,8 +88,8 @@ class SnakeEnv(gym.Env):
         terminated = new_head in self.snake_segments or self.is_wall_collision(new_head)
 
         if terminated:
-            # return self.get_state(), CRASH_COST, True, False, {}       # strong punishment for death
-            return self.get_state_experimental(), CRASH_COST, True, False, {}
+            return self.get_state(), CRASH_COST, True, False, {}       # strong punishment for death
+            # return self.get_state_experimental(), CRASH_COST, True, False, {}
 
         # add new head
         self.snake.appendleft(new_head)
@@ -95,6 +102,8 @@ class SnakeEnv(gym.Env):
             self.snake_segments.add(tail)
             self.food = self.spawn_food()
             self.steps = 0
+            if len(self.snake) % 10 == 0:
+                self.max_steps += self.max_steps_base
         else:
             reward = STEP_COST      # keep the snake honest, no loafing around!
 
@@ -106,9 +115,14 @@ class SnakeEnv(gym.Env):
             else:
                 reward += DIGRESS_COST
 
-        # if new_head in self.recently_visited:
-        #     reward += IN_PLACE_CIRCLING_COST
-        # self.recently_visited.append(new_head)
+        if new_head in self.recently_visited:
+            reward += IN_PLACE_CIRCLING_COST
+        self.recently_visited.append(new_head)
+
+        # coverage bonus
+        if new_head not in self.visited:
+            reward += COVERAGE_REWARD
+        self.visited.add(new_head)
 
         if action in (1, 2):
             reward += TURN_COST     # to smoothen path
@@ -117,8 +131,8 @@ class SnakeEnv(gym.Env):
         if truncated:
             reward = TRUNCATION_COST
 
-        # return self.get_state(), reward, False, truncated, {}
-        return self.get_state_experimental(), reward, False, truncated, {}
+        return self.get_state(), reward, False, truncated, {}
+        # return self.get_state_experimental(), reward, False, truncated, {}
 
     def close(self):
         self.renderer.close()
@@ -139,12 +153,12 @@ class SnakeEnv(gym.Env):
     def spawn_food(self, reset=False):
         # handling sparse reward issue
         # spawn food more in the center at the beginning and slowly move out as the snake grows
-        # radius = (self.grid_size // 8) + ((len(self.snake) - 3) // 5)       # every 5 food eaten increases radius by 1
-        # cx = cy = self.grid_size // 2
-        # x_min = max(cx - radius, 0)
-        # x_max = min(cx + radius, self.grid_size - 1)
-        # y_min = max(cy - radius, 0)
-        # y_max = min(cy + radius, self.grid_size - 1)
+        radius = (self.grid_size // 8) + ((len(self.snake) - 3) // 5)       # every 5 food eaten increases radius by 1
+        cx = cy = self.grid_size // 2
+        x_min = max(cx - radius, 0)
+        x_max = min(cx + radius, self.grid_size - 1)
+        y_min = max(cy - radius, 0)
+        y_max = min(cy + radius, self.grid_size - 1)
         # food_pos_choices = [(cx + 4, cy), (cx + 4, cy + 4), (cx, cy + 4), (cx - 4, cy + 4), (cx - 4, cy), (cx, cy)]
         # ptr = 0
         # attempts = 0
@@ -156,8 +170,8 @@ class SnakeEnv(gym.Env):
             # attempts += 1
             # if attempts > 20:
             #     food_pos = (cx + 6, cy)
-            # food_pos = random.randint(x_min, x_max), random.randint(y_min, y_max)
-            food_pos = random.randint(0, self.grid_size - 1), random.randint(0, self.grid_size - 1)
+            food_pos = random.randint(x_min, x_max), random.randint(y_min, y_max)
+            # food_pos = random.randint(0, self.grid_size - 1), random.randint(0, self.grid_size - 1)
             if food_pos not in self.snake_segments:
                 return food_pos
                 # yield food_pos
